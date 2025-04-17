@@ -156,6 +156,9 @@ Usage:  ota_from_target_files [flags] input_target_files output_ota_package
       ones. Should only be used if caller knows it's safe to do so (e.g. all the
       postinstall work is to dexopt apps and a data wipe will happen immediately
       after). Only meaningful when generating A/B OTAs.
+  --backup <boolean>
+      Enable or disable the execution of backuptool.sh.
+      Disabled by default.
 """
 
 from __future__ import print_function
@@ -721,7 +724,22 @@ def WriteFullOTAPackage(input_zip, output_file):
   if target_info.oem_props and not OPTIONS.oem_no_mount:
     target_info.WriteMountOemScript(script)
 
-  metadata = GetPackageMetadata(target_info)
+def CopyInstallTools(output_zip):
+  oldcwd = os.getcwd()
+  os.chdir(os.getenv('OUT'))
+  for root, subdirs, files in os.walk("install"):
+    for f in files:
+      p = os.path.join(root, f)
+      output_zip.write(p, p)
+  os.chdir(oldcwd)
+
+
+def WriteFullOTAPackage(input_zip, output_zip):
+  # TODO: how to determine this?  We don't know what version it will
+  # be installed on top of. For now, we expect the API just won't
+  # change very often. Similarly for fstab, it might have changed
+  # in the target build.
+  script = edify_generator.EdifyGenerator(3, OPTIONS.info_dict)
 
   if not OPTIONS.no_signing:
     staging_file = common.MakeTempFile(suffix='.zip')
@@ -742,7 +760,11 @@ def WriteFullOTAPackage(input_zip, output_file):
 
   assert HasRecoveryPatch(input_zip)
 
-  # Assertions (e.g. downgrade check, device properties check).
+  metadata["ota-type"] = "BLOCK"
+
+  #ts = GetBuildProp("ro.build.date.utc", OPTIONS.info_dict)
+  #ts_text = GetBuildProp("ro.build.date", OPTIONS.info_dict)
+  #script.AssertOlderBuild(ts, ts_text)
   ts = target_info.GetBuildProp("ro.build.date.utc")
   ts_text = target_info.GetBuildProp("ro.build.date")
   script.AssertOlderBuild(ts, ts_text)
@@ -801,6 +823,16 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
 
   device_specific.FullOTA_InstallBegin()
 
+  CopyInstallTools(output_zip)
+  script.UnpackPackageDir("install", "/tmp/install")
+  script.SetPermissionsRecursive("/tmp/install", 0, 0, 0755, 0644, None, None)
+  script.SetPermissionsRecursive("/tmp/install/bin", 0, 0, 0755, 0755, None, None)
+
+  if OPTIONS.backuptool:
+    script.Mount("/system")
+    script.RunBackup("backup")
+    script.Unmount("/system")
+
   system_progress = 0.75
 
   if OPTIONS.wipe_user_data:
@@ -839,6 +871,12 @@ else if get_stage("%(bcb_dev)s") == "3/3" then
 
   common.CheckSize(boot_img.data, "boot.img", target_info)
   common.ZipWriteStr(output_zip, "boot.img", boot_img.data)
+
+  if OPTIONS.backuptool:
+    script.ShowProgress(0.02, 10)
+    script.Mount("/system")
+    script.RunBackup("restore")
+    script.Unmount("/system")
 
   script.ShowProgress(0.05, 5)
   script.WriteRawImage("/boot", "boot.img")
@@ -1694,6 +1732,37 @@ def WriteABOTAPackageWithBrilloScript(target_file, output_file,
   if source_file is not None:
     target_info = BuildInfo(OPTIONS.target_info_dict, OPTIONS.oem_dicts)
     source_info = BuildInfo(OPTIONS.source_info_dict, OPTIONS.oem_dicts)
+    cmd.extend(["--source_image", source_file])
+  if OPTIONS.downgrade:
+    max_timestamp = GetBuildProp("ro.build.date.utc", OPTIONS.source_info_dict)
+  else:
+    max_timestamp = metadata["post-timestamp"]
+  cmd.extend(["--max_timestamp", max_timestamp])
+  p1 = common.Run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+  p1.communicate()
+  assert p1.returncode == 0, "brillo_update_payload generate failed"
+
+  # 2. Generate hashes of the payload and metadata files.
+  payload_sig_file = common.MakeTempFile(prefix="sig-", suffix=".bin")
+  metadata_sig_file = common.MakeTempFile(prefix="sig-", suffix=".bin")
+  cmd = ["brillo_update_payload", "hash",
+         "--unsigned_payload", payload_file,
+         "--signature_size", "256",
+         "--metadata_hash_file", metadata_sig_file,
+         "--payload_hash_file", payload_sig_file]
+  p1 = common.Run(cmd, stdout=log_file, stderr=subprocess.STDOUT)
+  p1.communicate()
+  assert p1.returncode == 0, "brillo_update_payload hash failed"
+
+  # 3. Sign the hashes and insert them back into the payload file.
+  signed_payload_sig_file = common.MakeTempFile(prefix="signed-sig-",
+                                                suffix=".bin")
+  signed_metadata_sig_file = common.MakeTempFile(prefix="signed-sig-",
+                                                 suffix=".bin")
+  # 3a. Sign the payload hash.
+  if OPTIONS.payload_signer is not None:
+    cmd = [OPTIONS.payload_signer]
+    cmd.extend(OPTIONS.payload_signer_args)
   else:
     target_info = BuildInfo(OPTIONS.info_dict, OPTIONS.oem_dicts)
     source_info = None
@@ -1830,6 +1899,8 @@ def main(argv):
       OPTIONS.extracted_input = a
     elif o == "--skip_postinstall":
       OPTIONS.skip_postinstall = True
+    elif o in ("--backup"):
+      OPTIONS.backuptool = bool(a.lower() == 'true')
     else:
       return False
     return True
@@ -1860,6 +1931,7 @@ def main(argv):
                                  "payload_signer_args=",
                                  "extracted_input_target_files=",
                                  "skip_postinstall",
+                                 "backup=",
                              ], extra_option_handler=option_handler)
 
   if len(args) != 2:

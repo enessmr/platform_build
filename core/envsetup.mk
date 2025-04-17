@@ -257,10 +257,6 @@ include $(board_config_mk)
 ifeq ($(TARGET_ARCH),)
   $(error TARGET_ARCH not defined by board config: $(board_config_mk))
 endif
-ifneq ($(MALLOC_IMPL),)
-  $(warning *** Unsupported option MALLOC_IMPL defined by board config: $(board_config_mk).)
-  $(error Use `MALLOC_SVELTE := true` to configure jemalloc for low-memory)
-endif
 TARGET_DEVICE_DIR := $(patsubst %/,%,$(dir $(board_config_mk)))
 board_config_mk :=
 
@@ -368,7 +364,11 @@ endif
 
 ifeq (,$(strip $(OUT_DIR)))
 ifeq (,$(strip $(OUT_DIR_COMMON_BASE)))
+ifneq ($(TOPDIR),)
 OUT_DIR := $(TOPDIR)out
+else
+OUT_DIR := $(shell readlink -f .)/out
+endif
 else
 OUT_DIR := $(OUT_DIR_COMMON_BASE)/$(notdir $(PWD))
 endif

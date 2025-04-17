@@ -638,6 +638,8 @@ function lunch()
 
     echo
 
+    fixup_common_out_dir
+
     set_stuff_for_environment
     printconfig
     destroy_build_var_cache
@@ -1526,6 +1528,64 @@ function godir () {
         pathname=${lines[0]}
     fi
     \cd $T/$pathname
+}
+
+function fixup_common_out_dir() {
+    common_out_dir=$(get_build_var OUT_DIR)/target/common
+    target_device=$(get_build_var TARGET_DEVICE)
+    if [ ! -z $ANDROID_FIXUP_COMMON_OUT ]; then
+        if [ -d ${common_out_dir} ] && [ ! -L ${common_out_dir} ]; then
+            mv ${common_out_dir} ${common_out_dir}-${target_device}
+            ln -s -r ${common_out_dir}-${target_device} ${common_out_dir}
+        else
+            [ -L ${common_out_dir} ] && rm ${common_out_dir}
+            mkdir -p ${common_out_dir}-${target_device}
+            ln -s -r ${common_out_dir}-${target_device} ${common_out_dir}
+        fi
+    else
+        [ -L ${common_out_dir} ] && rm ${common_out_dir}
+        mkdir -p ${common_out_dir}
+    fi
+}
+
+# Force JAVA_HOME to point to java 1.7/1.8 if it isn't already set.
+function set_java_home() {
+    # Clear the existing JAVA_HOME value if we set it ourselves, so that
+    # we can reset it later, depending on the version of java the build
+    # system needs.
+    #
+    # If we don't do this, the JAVA_HOME value set by the first call to
+    # build/envsetup.sh will persist forever.
+    if [ -n "$ANDROID_SET_JAVA_HOME" ]; then
+      export JAVA_HOME=""
+    fi
+
+    if [ ! "$JAVA_HOME" ]; then
+      if [ -n "$LEGACY_USE_JAVA7" ]; then
+        echo Warning: Support for JDK 7 will be dropped. Switch to JDK 8.
+        case `uname -s` in
+            Darwin)
+                export JAVA_HOME=$(/usr/libexec/java_home -v 1.7)
+                ;;
+            *)
+                export JAVA_HOME=/usr/lib/jvm/java-7-openjdk-amd64
+                ;;
+        esac
+      else
+        case `uname -s` in
+            Darwin)
+                export JAVA_HOME=$(/usr/libexec/java_home -v 1.8)
+                ;;
+            *)
+                export JAVA_HOME=/usr/lib/jvm/java-8-openjdk-amd64
+                ;;
+        esac
+      fi
+
+      # Keep track of the fact that we set JAVA_HOME ourselves, so that
+      # we can change it on the next envsetup.sh, if required.
+      export ANDROID_SET_JAVA_HOME=true
+    fi
 }
 
 # Print colored exit condition
