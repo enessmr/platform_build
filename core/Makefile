@@ -2445,7 +2445,8 @@ endif # build_ota_package
 # This zip can be used to create an OTA package or filesystem image
 # as a post-build step.
 #
-name := $(TARGET_PRODUCT)
+time := $(shell date +'%Y%m%d-%H%M%S')
+name := aosp-9.0-$(time)-$(TARGET_PRODUCT)
 ifeq ($(TARGET_BUILD_TYPE),debug)
   name := $(name)_debug
 endif
